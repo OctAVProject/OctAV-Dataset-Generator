@@ -32,6 +32,9 @@ def _send_file_to_lisa(filename):
         if resp.status_code == 200:
             break
 
+        if resp.status_code != 404:
+            raise SandBoxException(f"the sandbox returned HTTP code {resp.status_code} during report waiting")
+
         print("Waiting for the report...")
         time.sleep(2)
 
