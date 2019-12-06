@@ -6,6 +6,8 @@ import subprocess
 import time
 import requests
 
+from sandbox.api import LISA_SANDBOX_URL
+
 scripts_path = os.path.dirname(os.path.realpath(__file__))
 
 
@@ -19,7 +21,7 @@ def is_sandbox_available():
 
 def is_sandbox_ready():
     try:
-        resp = requests.get("http://localhost:4242")
+        resp = requests.get(LISA_SANDBOX_URL)
     except:
         return False
 

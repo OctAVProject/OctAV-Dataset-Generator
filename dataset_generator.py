@@ -1,6 +1,7 @@
 # coding: utf-8
 
 from sandbox.api import analyse_malware, analyse_legit_binary
+from sandbox.manager import is_sandbox_ready, start
 
 
 def generate_legit_binaries_dataset():
@@ -8,7 +9,7 @@ def generate_legit_binaries_dataset():
 
     # TODO : Iterate through the files to send to the sandbox
     # with multiprocessing.Pool(processes=4) as pool:  ??
-    #analyse_legit_binary("/bin/ls")
+    # analyse_legit_binary("/bin/ls")
 
 
 def generate_malwares_dataset():
@@ -20,5 +21,10 @@ def generate_malwares_dataset():
 
 
 if __name__ == "__main__":
+
     generate_legit_binaries_dataset()
+
+    if not is_sandbox_ready():
+        start()
+
     generate_malwares_dataset()

@@ -24,7 +24,6 @@ def _send_file_to_lisa(filename):
     task_id = resp.json()["task_id"]
     print("Task ID:", task_id)
 
-
     while True:
 
         resp = requests.get(LISA_SANDBOX_URL + "/api/report/" + task_id)
