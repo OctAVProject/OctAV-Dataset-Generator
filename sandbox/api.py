@@ -90,10 +90,18 @@ def _process_syscall_traces(traces):
 
 
 def analyse_malware(filename):
+
+    if not os.path.isfile(filename):
+        raise Exception(f"{filename} does not exist")
+
     _send_file_to_lisa(filename)
 
 
 def analyse_legit_binary(filename):
+
+    if not os.path.isfile(filename):
+        raise Exception(f"{filename} does not exist")
+
     strace_output, returncode = _exec_using_firejail(filename)
 
     if returncode == 0:
