@@ -60,7 +60,12 @@ def _process_syscall_traces(traces):
         if not line.startswith("[pid"):
             continue
 
+        # It could either mean the program is waiting for some stdin input or its running too fast for strace
         if "<unfinished ...>" in line:
+            continue
+
+        # Program crashed
+        if "(core dumped)" in line:
             continue
 
         end_pid = line.find("]")
@@ -114,8 +119,10 @@ def generate_command_lines_from_binary(filename, help_output):
         lowered_line = line.lower()
 
         if "usage:" in lowered_line:
-            if "[file]" in lowered_line or "[filename]" in lowered_line:
-                command_lines.append([filename, "/etc/passwd"])
+            if "file" in lowered_line:
+                command_lines   .append([filename, "/etc/passwd"])
+            elif "path" in lowered_line or "dir" in lowered_line or "folder" in lowered_line:
+                command_lines.append([filename, "/etc"])
 
         splitted_line = line.split()
 
