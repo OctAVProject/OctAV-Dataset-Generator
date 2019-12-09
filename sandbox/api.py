@@ -155,7 +155,12 @@ def generate_command_lines_from_binary(filename, help_output):
         if splitted_line and splitted_line[0].startswith("-"):
             detected_parameter = splitted_line[0].replace(",", "")
 
-            if "=" in detected_parameter:  # We skip --param=values kinds, too hard to process
+            # We skip --param=values kinds, too hard to process
+            if "=" in detected_parameter:
+                continue
+
+            # We skip non alpha parameters to reduce false positives
+            if not detected_parameter.replace("-", "").isalnum():
                 continue
 
             command_lines.append([filename, detected_parameter])
