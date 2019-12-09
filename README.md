@@ -7,8 +7,10 @@ This repository's goal is to generate a dataset of binaries execution for machin
 You need to have installed the following programs :
 
 - git
-- firejail
 - docker-compose
+- firejail
+- strace
+- xvfb
 
 ## Installation
 
