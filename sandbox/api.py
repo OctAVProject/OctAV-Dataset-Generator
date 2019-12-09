@@ -1,9 +1,11 @@
 # coding: utf-8
-
+import signal
 import subprocess
+from subprocess import PIPE
 import requests
 import os
 import time
+from tempfile import TemporaryDirectory
 
 LISA_SANDBOX_URL = "http://localhost:4242"
 
@@ -42,74 +44,98 @@ def _send_file_to_lisa(filename):
     print("\nGOT THE REPORT !!!")
 
 
+def _get_file_lines(path):
+    with open(path, "r") as file:
+        return file.read().split("\n")
+
+
 def _exec_using_firejail(command_line):
-    process = subprocess.run(["firejail", "--allow-debuggers", "--blacklist=/home",
-                              "strace", "-f", "-qq", "-xx", "-s", "1000", "bash", "-c", " ".join(command_line) + " 2>&1"],
-                             capture_output=True, timeout=10, input=b"Y\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\n")
 
-    return process.stdout, process.stderr.decode(), process.returncode  # strace prints syscalls on stderr
+    with TemporaryDirectory() as tmpdirname:
+        output_filename = tmpdirname + "/trace"
+
+        process = subprocess.Popen(["firejail", "--x11=xvfb", "--allow-debuggers", "--private",
+                                    "strace", "-o", output_filename, "-ff", "-xx", "-s",
+                                    "1000"] + command_line, stdout=PIPE, stderr=PIPE, preexec_fn=os.setsid)
+
+        try:
+            out, errs = process.communicate(timeout=5, input=b"Y\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\n")
+            # print("stdout:", out)
+            # print("stderr:", errs)
+        except subprocess.TimeoutExpired:
+            print(command_line, "timed out")
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            process.poll()
+            out, errs = None, None
+
+        traces_files = [f"{tmpdirname}/{file}" for file in os.listdir(tmpdirname)]
+
+        processes = []
+
+        for file in traces_files:
+            _, pid = file.split(".")
+            processes.append({
+                "pid": pid,
+                "syscalls": _get_file_lines(file)
+            })
+
+        return processes, out, process.returncode
 
 
-def _process_syscall_traces(traces):
-    syscalls = []
-    lines = traces.split("\n")
+def _parse_strace_output(processes):
+    syscalls_per_pid = {}
 
-    for line in lines:
+    for process in processes:
+        for syscall_line in process["syscalls"]:
 
-        # If the line doesn't start with that, it means those are bash syscalls (the parent)
-        if not line.startswith("[pid"):
-            continue
+            # It could either mean the program is waiting for some stdin input or its running too fast for strace
+            if "<unfinished ...>" in syscall_line:
+                continue
 
-        # It could either mean the program is waiting for some stdin input or its running too fast for strace
-        if "<unfinished ...>" in line:
-            continue
+            # Program crashed
+            if "(core dumped)" in syscall_line:
+                break
 
-        # Program crashed
-        if "(core dumped)" in line:
-            continue
+            end_syscall_name = syscall_line.find("(")
 
-        end_pid = line.find("]")
-        pid = int(line[4:end_pid])
+            if end_syscall_name == -1:  # Skip debug output lines
+                continue
 
-        begin_syscall_name = end_pid + 2
-        end_syscall_name = line.find("(", end_pid)
+            begin_return_value = syscall_line.rfind("=")
 
-        if end_syscall_name == -1:  # Skip debug output lines
-            continue
+            # return value of syscall not found
+            if begin_return_value == -1:
+                continue
 
-        begin_return_value = line.rfind("=")
+            begin_return_value += 2
+            end_return_value = syscall_line.find(" ", begin_return_value)
 
-        if begin_return_value == -1:
-            print(lines)
-            print()
-            print(line)
-            raise Exception("return value of syscall not found")
+            begin_parameter = end_syscall_name + 1
+            end_parameter = syscall_line.rfind(")", 0, begin_return_value)
 
-        begin_return_value += 2
-        end_return_value = line.find(" ", begin_return_value)
+            if end_parameter == -1:
+                continue
 
-        begin_parameter = end_syscall_name + 1
-        end_parameter = line.rfind(")", 0, begin_return_value)
+            name = syscall_line[:end_syscall_name]
 
-        if end_parameter == -1:
-            raise Exception("closing parenthesis of syscall not found")
+            # FIXME: will not work with a string containing ", "
+            parameters = syscall_line[begin_parameter:end_parameter].split(", ")
 
-        name = line[begin_syscall_name:end_syscall_name]
-        parameters = line[begin_parameter:end_parameter].split(", ")  # FIXME: will not work with a string containing ", "
+            if end_return_value == -1:
+                return_value = syscall_line[begin_return_value:]
+            else:
+                return_value = syscall_line[begin_return_value:end_return_value]
 
-        if end_return_value == -1:
-            return_value = line[begin_return_value:]
-        else:
-            return_value = line[begin_return_value:end_return_value]
+            if process["pid"] not in syscalls_per_pid:
+                syscalls_per_pid[process["pid"]] = []
 
-        syscalls.append({
-            "pid": pid,
-            "name": name,
-            "parameters": parameters,
-            "return_value": return_value
-        })
+            syscalls_per_pid[process["pid"]].append({
+                "name": name,
+                "parameters": parameters,
+                "return_value": return_value
+            })
 
-    return syscalls
+    return syscalls_per_pid
 
 
 def generate_command_lines_from_binary(filename, help_output):
@@ -120,7 +146,7 @@ def generate_command_lines_from_binary(filename, help_output):
 
         if "usage:" in lowered_line:
             if "file" in lowered_line:
-                command_lines   .append([filename, "/etc/passwd"])
+                command_lines.append([filename, "/etc/passwd"])
             elif "path" in lowered_line or "dir" in lowered_line or "folder" in lowered_line:
                 command_lines.append([filename, "/etc"])
 
@@ -137,9 +163,9 @@ def generate_command_lines_from_binary(filename, help_output):
     return command_lines
 
 
-def _does_syscall_sequence_already_exist(existing_syscalls_per_parameter, syscalls):
+def _does_syscall_sequence_already_exist(existing_syscalls_per_pid, syscalls):
 
-    for sequence in existing_syscalls_per_parameter:
+    for sequence in existing_syscalls_per_pid:
 
         if len(sequence) != len(syscalls):
             continue
@@ -153,54 +179,43 @@ def _does_syscall_sequence_already_exist(existing_syscalls_per_parameter, syscal
     return False
 
 
-def analyse_malware(filename):
+def analyse_malware(binary_path):
 
-    if not os.path.isfile(filename):
-        raise Exception(f"{filename} does not exist")
+    if not os.path.isfile(binary_path):
+        raise Exception(f"{binary_path} does not exist")
 
-    _send_file_to_lisa(filename)
+    _send_file_to_lisa(binary_path)
 
 
-def analyse_legit_binary(filename):
+def analyse_legit_binary(binary_path):
 
-    if not os.path.isfile(filename):
-        raise Exception(f"{filename} does not exist")
+    if not os.path.isfile(binary_path):
+        raise Exception(f"{binary_path} does not exist")
 
-    progam_output, strace_output, returncode = _exec_using_firejail([filename, "--help"])
-    help_syscalls = _process_syscall_traces(strace_output)
-    syscalls_per_parameter = [help_syscalls]
+    processes, help_output, returncode = _exec_using_firejail([binary_path, "--help"])
 
     if returncode != 0:
-        print(f"'{filename} --help' does not seem to work")
-        return
+        processes, help_output, returncode = _exec_using_firejail([binary_path, "-h"])
 
-    potentially_working_command_lines = generate_command_lines_from_binary(filename, progam_output.decode())
-    print(potentially_working_command_lines)
+        if returncode != 0:
+            print(f"Help of {binary_path} not found\n")
+            return
 
-    timeouts_count = 0
+    help_syscalls = _parse_strace_output(processes)
+    syscalls_sequences = list(help_syscalls.values())
+
+    potentially_working_command_lines = generate_command_lines_from_binary(binary_path, help_output.decode())
+    print("Potentially working command lines:", potentially_working_command_lines)
 
     for command_line in potentially_working_command_lines:
 
-        try:
-            progam_output, strace_output, returncode = _exec_using_firejail(command_line)
+        processes, program_output, returncode = _exec_using_firejail(command_line)
 
-            if returncode == 0:
-                syscalls = _process_syscall_traces(strace_output)
+        for pid, syscalls_sequence in _parse_strace_output(processes).items():
+            # Make sur we don't have this sequence already
+            if not _does_syscall_sequence_already_exist(syscalls_sequences, syscalls_sequence):
+                print(command_line, f"(pid {pid}) produced", len(syscalls_sequence), "syscalls")
+                syscalls_sequences.append(syscalls_sequence)
 
-                # Make sur we don't have this sequence already
-                if not _does_syscall_sequence_already_exist(syscalls_per_parameter, syscalls):
-                    print(command_line, "produced", len(syscalls), "syscalls")
-                    syscalls_per_parameter.append(syscalls)
-
-                # else:
-                #     print(command_line, "syscalls sequence already exists")
             else:
-                print(command_line, "didn't work as expected")
-
-        except subprocess.TimeoutExpired:
-            print(command_line, "timed out")
-            timeouts_count += 1
-
-            if timeouts_count > 3:
-                print("This program times out too much, skipping...")
-                break
+                print(command_line, "syscalls sequence already exists")
