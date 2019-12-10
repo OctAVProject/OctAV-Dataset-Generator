@@ -62,6 +62,13 @@ def _exec_using_firejail(command_line):
             out, errs = process.communicate(timeout=5, input=b"Y\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\nY\n")
             # print("stdout:", out)
             # print("stderr:", errs)
+
+            if b"invalid" in errs and b"command line option" in errs:
+                print(errs.decode()[:-1])
+                print("Unsupported argument detected ! You're probably running an old version of firejail which "
+                      "doesn't like a parameter.\nCompile it manually using the latest version to fix the issue.")
+                exit(1)
+
         except subprocess.TimeoutExpired:
             print(command_line, "timed out")
             os.killpg(os.getpgid(process.pid), signal.SIGTERM)
