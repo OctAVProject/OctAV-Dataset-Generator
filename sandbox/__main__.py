@@ -4,7 +4,7 @@ import os
 import sys
 
 from sandbox.manager import start
-from sandbox.api import analyse_malware
+from sandbox.lisa import analyse as analyse_malware
 
 
 if __name__ == "__main__":

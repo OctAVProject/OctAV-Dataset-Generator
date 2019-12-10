@@ -1,9 +1,13 @@
 # coding: utf-8
 import os
-import subprocess
+import time
+from multiprocessing import Pool
+from typing import Set
 
-from sandbox.api import analyse_malware, analyse_legit_binary
+from sandbox.firejail import analyse as analyse_legit_binary
+from sandbox.lisa import analyse as analyse_malware
 from sandbox.manager import is_sandbox_ready, start
+from sandbox.syscalls import ExecutionFlow
 
 LEGIT_BINARIES_LOCATIONS = [
     "/bin",
@@ -15,17 +19,28 @@ LEGIT_BINARIES_LOCATIONS = [
 def generate_legit_binaries_dataset():
     print("Generating legit binaries dataset...")
 
-    # TODO with multiprocessing.Pool(processes=4) as pool:  ??
+    begin_analysis = time.time()
 
+    binaries = set()
     for bin_dir in LEGIT_BINARIES_LOCATIONS:
-        files = os.listdir(bin_dir)
-        print(f"Executing {len(files)} binaries from '{bin_dir}'...\n")
-
-        for file in files:
-            full_path = bin_dir + "/" + file
+        for file in os.listdir(bin_dir):
+            full_path = os.path.realpath(bin_dir + "/" + file)
             if os.path.isfile(full_path):
-                analyse_legit_binary(full_path)
-                print()  # seperation between each binary
+                binaries.add(full_path)
+
+    unique_syscalls_sequences_of_all_binaries = set()  # type: Set[ExecutionFlow]
+
+    with Pool() as pool:
+        syscall_sequences = pool.map(analyse_legit_binary, binaries)
+
+        for sequence in syscall_sequences:
+            unique_syscalls_sequences_of_all_binaries.update(sequence)
+
+    print()
+    print("-" * 50)
+    print("Job done in", int(time.time() - begin_analysis), "seconds")
+    print("Executed binaries count:", len(binaries))
+    print("Unique syscall sequences count:", len(unique_syscalls_sequences_of_all_binaries))
 
 
 def generate_malwares_dataset():

@@ -4,11 +4,47 @@ import os
 import signal
 import subprocess
 from tempfile import TemporaryDirectory
+from typing import List, Set
+
+from sandbox.syscalls import Syscall, ExecutionFlow, SyscallParsingException
 
 
-def _get_file_lines(path):
+class ProgramCrashedException(Exception):
+    pass
+
+
+class HelpNotFoundException(Exception):
+    pass
+
+
+def _parse_strace_output(path):
+
     with open(path, "r") as file:
-        return file.read().split("\n")
+        syscalls = []  # type: List[Syscall]
+
+        line_being_built = None
+
+        for line in file.read().split("\n"):
+            if line:
+                if "(core dump)" in line:
+                    raise ProgramCrashedException
+
+                if line.startswith("---") or line.startswith("+++"):  # Skip non syscall lines
+                    continue
+
+                if line_being_built:
+                    line = line_being_built + line
+                    print("BUILT LINE:", line)
+                    line_being_built = None
+
+                try:
+                    syscalls.append(Syscall(line))
+
+                # For an unknown reason, strace sometimes writes syscalls on multiple lines
+                except SyscallParsingException:
+                    line_being_built = line
+
+        return syscalls
 
 
 def _exec_using_firejail(command_line):
@@ -17,7 +53,7 @@ def _exec_using_firejail(command_line):
         output_filename = tmpdirname + "/trace"
 
         process = subprocess.Popen(["firejail", "--x11=xvfb", "--allow-debuggers", "--overlay-tmpfs",
-                                    "strace", "-o", output_filename, "-ff", "-xx", "-s", "1000"]
+                                    "strace", "-o", output_filename, "-ff", "-xx", "-qq", "-s", "1000"]
                                    + command_line, stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=os.setsid)
 
         try:
@@ -39,72 +75,19 @@ def _exec_using_firejail(command_line):
 
         traces_files = [f"{tmpdirname}/{file}" for file in os.listdir(tmpdirname)]
 
-        processes = []
+        flows = []  # type: List[ExecutionFlow]
 
         for file in traces_files:
             _, pid = file.split(".")
-            processes.append({
-                "pid": pid,
-                "syscalls": _get_file_lines(file)
-            })
 
-        return processes, out, process.returncode
+            try:
+                flow = ExecutionFlow(pid, _parse_strace_output(file))
+                print(command_line, f"(pid {flow.pid}) produced", len(flow), "syscalls")
+                flows.append(flow)
+            except ProgramCrashedException:
+                print(command_line, "crashed")
 
-
-def _parse_strace_output(processes):
-    syscalls_per_pid = {}
-
-    for process in processes:
-        for syscall_line in process["syscalls"]:
-
-            # It could either mean the program is waiting for some stdin input or its running too fast for strace
-            if "<unfinished ...>" in syscall_line:
-                continue
-
-            # Program crashed
-            if "(core dumped)" in syscall_line:
-                break
-
-            end_syscall_name = syscall_line.find("(")
-
-            if end_syscall_name == -1:  # Skip debug output lines
-                continue
-
-            begin_return_value = syscall_line.rfind("=")
-
-            # return value of syscall not found
-            if begin_return_value == -1:
-                continue
-
-            begin_return_value += 2
-            end_return_value = syscall_line.find(" ", begin_return_value)
-
-            begin_parameter = end_syscall_name + 1
-            end_parameter = syscall_line.rfind(")", 0, begin_return_value)
-
-            if end_parameter == -1:
-                continue
-
-            name = syscall_line[:end_syscall_name]
-
-            # FIXME: will not work with a string containing ", "
-            parameters = syscall_line[begin_parameter:end_parameter].split(", ")
-
-            if end_return_value == -1:
-                return_value = syscall_line[begin_return_value:]
-            else:
-                return_value = syscall_line[begin_return_value:end_return_value]
-
-            if process["pid"] not in syscalls_per_pid:
-                syscalls_per_pid[process["pid"]] = []
-
-            syscalls_per_pid[process["pid"]].append({
-                "name": name,
-                "parameters": parameters,
-                "return_value": return_value
-            })
-
-    return syscalls_per_pid
+        return flows, out, process.returncode
 
 
 def generate_command_lines_from_binary(filename, help_output):
@@ -137,53 +120,31 @@ def generate_command_lines_from_binary(filename, help_output):
     return command_lines
 
 
-def _does_syscall_sequence_already_exist(existing_syscalls_per_pid, syscalls):
-
-    for sequence in existing_syscalls_per_pid:
-
-        if len(sequence) != len(syscalls):
-            continue
-
-        for i in range(len(sequence)):
-            if sequence[i]["name"] != syscalls[i]["name"]:
-                continue
-
-        return True
-
-    return False
-
-
-def analyse(binary_path):
+def analyse(binary_path) -> Set[ExecutionFlow]:
 
     if not os.path.isfile(binary_path):
         raise Exception(f"{binary_path} does not exist")
 
-    processes, help_output, returncode = _exec_using_firejail([binary_path, "--help"])
+    total_flows_count = 0
+    unique_inlined_flows = set()  # type: Set[ExecutionFlow]
+    execution_flows, help_output, returncode = _exec_using_firejail([binary_path, "--help"])
 
     if returncode != 0:
-        processes, help_output, returncode = _exec_using_firejail([binary_path, "-h"])
+        execution_flows, help_output, returncode = _exec_using_firejail([binary_path, "-h"])
 
         if returncode != 0:
-            print(f"Help of {binary_path} not found\n")
-            return
+            print(f"{binary_path} --help does not seem to work")
+            help_output = b""
 
-    help_syscalls = _parse_strace_output(processes)
-    syscalls_sequences = list(help_syscalls.values())
-
+    total_flows_count += len(execution_flows)
+    unique_inlined_flows.update(execution_flows)
     potentially_working_command_lines = generate_command_lines_from_binary(binary_path, help_output.decode())
-    print("Potentially working command lines:", potentially_working_command_lines)
 
     for command_line in potentially_working_command_lines:
+        execution_flows, program_output, returncode = _exec_using_firejail(command_line)
+        total_flows_count += len(execution_flows)
+        unique_inlined_flows.update(execution_flows)
 
-        processes, program_output, returncode = _exec_using_firejail(command_line)
+    print(f"Total flows: {total_flows_count} -- Unique flows: {len(unique_inlined_flows)}")
 
-        for pid, syscalls_sequence in _parse_strace_output(processes).items():
-            # Make sur we don't have this sequence already
-            if not _does_syscall_sequence_already_exist(syscalls_sequences, syscalls_sequence):
-                print(command_line, f"(pid {pid}) produced", len(syscalls_sequence), "syscalls")
-                syscalls_sequences.append(syscalls_sequence)
-
-            else:
-                print(command_line, "syscalls sequence already exists")
-
-    return syscalls_sequences
+    return unique_inlined_flows
