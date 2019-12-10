@@ -16,6 +16,11 @@ LEGIT_BINARIES_LOCATIONS = [
 ]
 
 
+# TODO
+def export_dataset(syscalls_sequences: Set[ExecutionFlow]):
+    pass
+
+
 def generate_legit_binaries_dataset():
     print("Generating legit binaries dataset...")
 
@@ -41,6 +46,8 @@ def generate_legit_binaries_dataset():
     print("Job done in", int(time.time() - begin_analysis), "seconds")
     print("Executed binaries count:", len(binaries))
     print("Unique syscall sequences count:", len(unique_syscalls_sequences_of_all_binaries))
+
+    export_dataset(unique_syscalls_sequences_of_all_binaries)
 
 
 def generate_malwares_dataset():
