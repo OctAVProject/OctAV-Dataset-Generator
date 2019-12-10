@@ -54,7 +54,7 @@ def _exec_using_firejail(command_line):
     with TemporaryDirectory() as tmpdirname:
         output_filename = tmpdirname + "/trace"
 
-        process = subprocess.Popen(["firejail", "--x11=xvfb", "--allow-debuggers", "--private",
+        process = subprocess.Popen(["firejail", "--x11=xvfb", "--allow-debuggers", "--overlay-tmpfs", "--private-tmp",
                                     "strace", "-o", output_filename, "-ff", "-xx", "-s",
                                     "1000"] + command_line, stdout=PIPE, stderr=PIPE, preexec_fn=os.setsid)
 
