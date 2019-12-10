@@ -6,7 +6,7 @@ import subprocess
 import time
 import requests
 
-from sandbox.api import LISA_SANDBOX_URL
+from sandbox.lisa import LISA_SANDBOX_URL
 
 scripts_path = os.path.dirname(os.path.realpath(__file__))
 
