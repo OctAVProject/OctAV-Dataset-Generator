@@ -98,7 +98,6 @@ def generate_legit_binaries_dataset():
                 binaries.add(full_path)
 
     binaries = sorted(list(binaries))  # Sort in order to see progress based on alphabetical names
-    binaries = binaries[:5]
 
     def error_callback(exc):
         raise exc
