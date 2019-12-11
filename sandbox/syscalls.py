@@ -16,8 +16,7 @@ class Syscall(object):
     def __init__(self, strace_syscall_line: str):
         # It could either mean the program is waiting for some stdin input or its running too fast for strace
         if "<unfinished ...>" in strace_syscall_line:
-            self.name = "unfinished"
-            return
+            raise SyscallParsingException("unfinished syscall")
 
         end_syscall_name = strace_syscall_line.find("(")
 
@@ -40,9 +39,10 @@ class Syscall(object):
             raise SyscallParsingException("parameter parsing error")
 
         self.name = strace_syscall_line[:end_syscall_name]
+        self.raw_parameters = strace_syscall_line[begin_parameter:end_parameter]
 
         # FIXME: will not work with a string containing ", "
-        self.parameters = strace_syscall_line[begin_parameter:end_parameter].split(", ")
+        self.parameters = self.raw_parameters.split(", ")
 
         if end_return_value == -1:
             self.return_value = strace_syscall_line[begin_return_value:]

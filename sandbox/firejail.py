@@ -3,7 +3,9 @@
 import os
 import signal
 import subprocess
+from multiprocessing.pool import Pool
 from tempfile import TemporaryDirectory
+from threading import Thread
 from typing import List, Set
 
 from sandbox.syscalls import Syscall, ExecutionFlow, SyscallParsingException
@@ -82,7 +84,7 @@ def _exec_using_firejail(command_line):
 
             try:
                 flow = ExecutionFlow(pid, _parse_strace_output(file))
-                print(command_line, f"(pid {flow.pid}) produced", len(flow), "syscalls")
+                # print(command_line, f"(pid {flow.pid}) produced", len(flow), "syscalls")
                 flows.append(flow)
             except ProgramCrashedException:
                 print(command_line, "crashed")
@@ -140,11 +142,23 @@ def analyse(binary_path) -> Set[ExecutionFlow]:
     unique_inlined_flows.update(execution_flows)
     potentially_working_command_lines = generate_command_lines_from_binary(binary_path, help_output.decode())
 
+    threads = []
+    threads_results = []
+
+    def thread_wrapper(*args):
+        threads_results.append(_exec_using_firejail(*args))
+
     for command_line in potentially_working_command_lines:
-        execution_flows, program_output, returncode = _exec_using_firejail(command_line)
+        thread = Thread(target=thread_wrapper, args=(command_line,))
+        threads.append(thread)
+        thread.start()
+
+    for thread in threads:
+        thread.join()
+
+    for execution_flows, program_output, returncode in threads_results:
         total_flows_count += len(execution_flows)
         unique_inlined_flows.update(execution_flows)
-
-    print(f"Total flows: {total_flows_count} -- Unique flows: {len(unique_inlined_flows)}")
+        # print(f"Total flows: {total_flows_count} -- Unique flows: {len(unique_inlined_flows)}")
 
     return unique_inlined_flows

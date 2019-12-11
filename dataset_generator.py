@@ -1,8 +1,12 @@
 # coding: utf-8
+import csv
+import multiprocessing
 import os
+import threading
 import time
+import sqlite3
 from multiprocessing import Pool
-from typing import Set
+from typing import Set, IO, List
 
 from sandbox.firejail import analyse as analyse_legit_binary
 from sandbox.lisa import analyse as analyse_malware
@@ -15,14 +19,74 @@ LEGIT_BINARIES_LOCATIONS = [
     "/usr/bin"
 ]
 
+DB_FILE = "dataset.db"
 
-# TODO
-def export_dataset(syscalls_sequences: Set[ExecutionFlow]):
-    pass
+SQLITE_SCHEME = """CREATE TABLE IF NOT EXISTS execution_flows (
+                        id integer PRIMARY KEY AUTOINCREMENT
+                        -- Maybe later we could add stuff like "opened_files"
+                    );
+
+                    CREATE TABLE IF NOT EXISTS syscalls (
+                        id integer PRIMARY KEY AUTOINCREMENT,
+                        flow_id INTEGER,
+                        name TEXT,
+                        parameters TEXT,
+                        return_value TEXT,
+                        FOREIGN KEY(flow_id) REFERENCES execution_flow(id)
+                    );"""
+
+# The higher this value is, the heavier it will be on RAM usage. It will increase speed however
+EXPORT_BUFFERED_SYSCALLS_COUNT = 10
+
+db = sqlite3.connect(DB_FILE)
+
+# We store a hash of each execution flow to be sure we don't have it already (lowers RAM usage to use hashes)
+hash_of_known_syscalls_sequences = set()  # type: Set[hash(ExecutionFlow)]
+
+# We use a list to buffer execution flows for performance, we know they're unique already
+buffered_flows = []  # type: List[ExecutionFlow]
+buffered_syscalls_count = 0
+
+lock = threading.Lock()
+
+
+def _export_flows():
+    global buffered_syscalls_count
+
+    for buffered_flow in buffered_flows:
+        cursor = db.execute("INSERT INTO execution_flows VALUES(NULL);")
+
+        for syscall in buffered_flow:
+            db.execute(f"INSERT INTO syscalls VALUES(NULL, ?, ?, ?, ?);",
+                       (cursor.lastrowid, syscall.name, syscall.raw_parameters, syscall.return_value))
+
+        db.commit()
+
+    with lock:
+        buffered_syscalls_count = 0
+        buffered_flows.clear()
+
+
+# This callback is called in the context of the main process
+def _process_finished_callback(execution_flows: Set[ExecutionFlow]):
+    global buffered_syscalls_count
+
+    for flow in execution_flows:
+        flow_hash = hash(flow)
+        if flow_hash not in hash_of_known_syscalls_sequences:
+            hash_of_known_syscalls_sequences.add(flow_hash)
+
+            with lock:
+                buffered_syscalls_count += len(flow)
+                buffered_flows.append(flow)
 
 
 def generate_legit_binaries_dataset():
     print("Generating legit binaries dataset...")
+
+    # Build tables if not existing already
+    db.executescript(SQLITE_SCHEME)
+    db.commit()
 
     begin_analysis = time.time()
 
@@ -33,21 +97,46 @@ def generate_legit_binaries_dataset():
             if os.path.isfile(full_path):
                 binaries.add(full_path)
 
-    unique_syscalls_sequences_of_all_binaries = set()  # type: Set[ExecutionFlow]
+    binaries = sorted(list(binaries))  # Sort in order to see progress based on alphabetical names
+    binaries = binaries[:5]
+
+    def error_callback(exc):
+        raise exc
 
     with Pool() as pool:
-        syscall_sequences = pool.map(analyse_legit_binary, binaries)
 
-        for sequence in syscall_sequences:
-            unique_syscalls_sequences_of_all_binaries.update(sequence)
+        results = []
+
+        for binary in binaries:
+            result = pool.apply_async(analyse_legit_binary, args=(binary,),
+                                      callback=_process_finished_callback,
+                                      error_callback=error_callback)
+            results.append(result)
+
+        while results:
+            results_indexes_to_remove = []
+
+            for i in range(len(results)):
+                if results[i].ready():
+                    results_indexes_to_remove.append(i)
+
+            for i, index_to_remove in enumerate(results_indexes_to_remove):
+                del results[index_to_remove - i]
+
+            if buffered_syscalls_count > EXPORT_BUFFERED_SYSCALLS_COUNT:
+                _export_flows()
+
+            time.sleep(1)
+
+    _export_flows()  # Export remaining buffered flows
 
     print()
     print("-" * 50)
     print("Job done in", int(time.time() - begin_analysis), "seconds")
     print("Executed binaries count:", len(binaries))
-    print("Unique syscall sequences count:", len(unique_syscalls_sequences_of_all_binaries))
+    print("Unique syscall sequences count:", len(hash_of_known_syscalls_sequences))
 
-    export_dataset(unique_syscalls_sequences_of_all_binaries)
+    db.close()
 
 
 def generate_malwares_dataset():
