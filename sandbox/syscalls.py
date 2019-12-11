@@ -13,6 +13,8 @@ class Syscall(object):
     A `Syscall` object is basically a parsed line of strace
     """
 
+    __slots__ = ("name", "raw_parameters", "parameters", "return_value")
+
     def __init__(self, strace_syscall_line: str):
         # It could either mean the program is waiting for some stdin input or its running too fast for strace
         if "<unfinished ...>" in strace_syscall_line:
@@ -58,8 +60,9 @@ class Syscall(object):
 
 class ExecutionFlow(List[Syscall]):
 
-    def __init__(self, pid, syscalls: List[Syscall] = None):
+    def __init__(self, command_line, pid, syscalls: List[Syscall] = None):
         super().__init__()
+        self.command_line = command_line
         self.pid = pid
 
         if syscalls:

@@ -83,12 +83,13 @@ def _exec_using_firejail(command_line):
             _, pid = file.split(".")
 
             try:
-                flow = ExecutionFlow(pid, _parse_strace_output(file))
+                flow = ExecutionFlow(" ".join(command_line), pid, _parse_strace_output(file))
                 # print(command_line, f"(pid {flow.pid}) produced", len(flow), "syscalls")
                 flows.append(flow)
             except ProgramCrashedException:
                 print(command_line, "crashed")
 
+        print(command_line, "produced a total of", sum(len(flow) for flow in flows), "syscalls")
         return flows, out, process.returncode
 
 
