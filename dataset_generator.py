@@ -1,6 +1,5 @@
 # coding: utf-8
-import csv
-import multiprocessing
+
 import os
 import threading
 import time
@@ -22,7 +21,8 @@ LEGIT_BINARIES_LOCATIONS = [
 DB_FILE = "dataset.db"
 
 SQLITE_SCHEME = """CREATE TABLE IF NOT EXISTS execution_flows (
-                        id integer PRIMARY KEY AUTOINCREMENT
+                        id integer PRIMARY KEY AUTOINCREMENT,
+                        command_line TEXT
                         -- Maybe later we could add stuff like "opened_files"
                     );
 
@@ -36,7 +36,7 @@ SQLITE_SCHEME = """CREATE TABLE IF NOT EXISTS execution_flows (
                     );"""
 
 # The higher this value is, the heavier it will be on RAM usage. It will increase speed however
-EXPORT_BUFFERED_SYSCALLS_COUNT = 10
+EXPORT_BUFFERED_SYSCALLS_COUNT = 100000
 
 db = sqlite3.connect(DB_FILE)
 
@@ -47,14 +47,17 @@ hash_of_known_syscalls_sequences = set()  # type: Set[hash(ExecutionFlow)]
 buffered_flows = []  # type: List[ExecutionFlow]
 buffered_syscalls_count = 0
 
-lock = threading.Lock()
+cleaning_lock = threading.Lock()
+needs_cleaning_cond = threading.Condition(lock=cleaning_lock)
 
 
+# TODO : try using postgresql instead of sqlite ? (or support both ?)
+#  execute() and commit() take 2/3 of the whole exec time...
 def _export_flows():
     global buffered_syscalls_count
 
     for buffered_flow in buffered_flows:
-        cursor = db.execute("INSERT INTO execution_flows VALUES(NULL);")
+        cursor = db.execute("INSERT INTO execution_flows VALUES(NULL, ?);", (buffered_flow.command_line,))
 
         for syscall in buffered_flow:
             db.execute(f"INSERT INTO syscalls VALUES(NULL, ?, ?, ?, ?);",
@@ -62,9 +65,10 @@ def _export_flows():
 
         db.commit()
 
-    with lock:
+    with needs_cleaning_cond:
         buffered_syscalls_count = 0
         buffered_flows.clear()
+        needs_cleaning_cond.notify_all()
 
 
 # This callback is called in the context of the main process
@@ -76,9 +80,12 @@ def _process_finished_callback(execution_flows: Set[ExecutionFlow]):
         if flow_hash not in hash_of_known_syscalls_sequences:
             hash_of_known_syscalls_sequences.add(flow_hash)
 
-            with lock:
+            with needs_cleaning_cond:
                 buffered_syscalls_count += len(flow)
                 buffered_flows.append(flow)
+
+                if buffered_syscalls_count > EXPORT_BUFFERED_SYSCALLS_COUNT:
+                    needs_cleaning_cond.wait()
 
 
 def generate_legit_binaries_dataset():
@@ -124,8 +131,6 @@ def generate_legit_binaries_dataset():
 
             if buffered_syscalls_count > EXPORT_BUFFERED_SYSCALLS_COUNT:
                 _export_flows()
-
-            time.sleep(1)
 
     _export_flows()  # Export remaining buffered flows
 
