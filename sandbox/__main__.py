@@ -1,36 +1,30 @@
 # coding: utf-8
 
-import os
 import sys
-
-from sandbox.manager import start
-from sandbox.lisa import analyse as analyse_malware
-
+from argparse import ArgumentParser
+from sandbox import lisa
 
 if __name__ == "__main__":
 
-    if len(sys.argv) < 2:
-        print("Please specify 'start' or 'submit'")
-        exit(1)
+    parser = ArgumentParser(prog="python -m sandbox", description='This is the sandbox manager.')
+    parser.add_argument('--start', help='start LiSa docker containers', action='store_true')
+    parser.add_argument('--submit', metavar="FILE", help='submit a file to the LiSa sandbox')
 
-    if sys.argv[1] == "start":
-        start()
+    args = parser.parse_args(None if sys.argv[1:] else ['--help'])
 
-    elif sys.argv[1] == "submit":
-
-        if len(sys.argv) != 3:
-            print(f"Usage: {sys.argv[0]} {sys.argv[1]} [FILEPATH]")
-            exit(1)
-
-        filepath = sys.argv[2]
-
-        if os.path.isfile(filepath):
-            analyse_malware(filepath)
-        else:
-            print(f"File '{filepath}' does not exist")
-            exit(1)
+    if lisa.is_sandbox_ready():
+        if args.start:
+            print("You specified --start but the sandbox seems to be up already !")
 
     else:
-        print(f"Unknown '{sys.argv[1]}' operation")
-        exit(1)
+        if args.submit:
+            print("Sandbox is not ready !")
 
+            if not args.start:
+                exit(1)
+
+        if args.start:
+            lisa.start_sandbox()
+
+    if args.submit:
+        lisa.analyse(args.submit)

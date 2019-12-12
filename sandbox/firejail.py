@@ -3,12 +3,11 @@
 import os
 import signal
 import subprocess
-from multiprocessing.pool import Pool
 from tempfile import TemporaryDirectory
 from threading import Thread
 from typing import List, Set
 
-from sandbox.syscalls import Syscall, ExecutionFlow, SyscallParsingException
+from dataset.syscalls import Syscall, ExecutionFlow, SyscallParsingException
 
 
 class ProgramCrashedException(Exception):
@@ -36,7 +35,6 @@ def _parse_strace_output(path):
 
                 if line_being_built:
                     line = line_being_built + line
-                    print("BUILT LINE:", line)
                     line_being_built = None
 
                 try:
