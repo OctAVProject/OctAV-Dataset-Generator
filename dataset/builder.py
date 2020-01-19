@@ -146,7 +146,6 @@ def generate_legit_binaries_dataset(legit_directories: List[str], db: sqlite3.Co
                 binaries.add(full_path)
 
     binaries = sorted(list(binaries))  # Sort in order to see progress based on alphabetical names
-    binaries = ["/usr/bin/yes"]
 
     # We dont want command line duplicates in the dataset
     cursor = db.execute("SELECT command_line FROM executions;")
@@ -177,7 +176,7 @@ def generate_legit_binaries_dataset(legit_directories: List[str], db: sqlite3.Co
 
             # Skip binaries we already have
             if binary in commands_already_in_dataset:
-                pass
+                continue
 
             # TODO : generate command lines depending on cpu_count() (multithreaded?) to speed things up (to keep the workers busy)
             generated_commands = _generate_command_lines_from_binary(binary)

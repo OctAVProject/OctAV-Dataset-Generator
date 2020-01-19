@@ -46,7 +46,8 @@ def check_requirements():
         subprocess.check_output(FIREJAIL_COMMAND + ["test"], stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as cpe:
 
-        if b"invalid" in cpe.stderr and b"command line option" in cpe.stderr:
+        if b"invalid" in cpe.stderr and b"command line option" in cpe.stderr \
+                or b"Xvfb program was not found" in cpe.stderr:
             print(cpe.stderr.decode()[:-1])
             print("Unsupported argument detected ! You're probably running an old version of firejail which "
                   "doesn't like a parameter.\nCompile it manually using the latest version to fix the issue.")
@@ -183,11 +184,9 @@ def _exec_using_firejail(command_line, debug=False):
                 except UnicodeDecodeError:
                     print("strace output of '", command_line, "' contains binary data, ignoring")
 
-            print(command_line, "returned")
             return flows, out, errs, process.returncode
 
         else:
-            print(command_line, "returned")
             return out, errs, process.returncode
 
 
