@@ -37,7 +37,8 @@ Two modules are available : `dataset` and `sandbox`. The first one aims to build
 ```
 $ python -m dataset --help
 usage: python -m dataset [-h] [--malware-dirs DIRECTORY [DIRECTORY ...]]
-                         [--legit-dirs DIRECTORY [DIRECTORY ...]]
+                         [--legit-dirs DIRECTORY [DIRECTORY ...]] --db DB_FILE [--overwrite]
+                         [--append] [--stats]
 
 This is the dataset builder.
 
@@ -46,10 +47,14 @@ optional arguments:
   --malware-dirs DIRECTORY [DIRECTORY ...]
                         directories of malwares to process
   --legit-dirs DIRECTORY [DIRECTORY ...]
-                        directories of legit binaries to process 
+                        directories of legit binaries to process
+  --db DB_FILE          sqlite database
+  --overwrite           delete the existing database to create a new one
+  --append              append results to the existing database
+  --stats               prints some stats about the given dataset
 ```
 
-Ex: `python -m dataset --legit-dirs /bin /sbin /usr/bin`
+Ex: `python -m dataset --legit-dirs /bin /sbin /usr/bin --db dataset.db --append --stats`
 
 ```
 $ python -m sandbox --help
@@ -67,21 +72,13 @@ Ex: `python -m sandbox --start --submit ~/Downloads/evil_malware`
 
 ## Generated dataset
 
-This script will output a file named `dataset.db` which is an sqlite3 database.
+This script outputs an sqlite database with the following format :
+![alt db_scheme](db_scheme.png)
 
-It has two tables : `execution_flows` and `syscalls`.
 
-The `syscalls` table looks as follow :
-
-| id  | flow_id | name | parameters | return_value |
-|:---:|:-------:|:----:|:----------:|:------------:|
-| 1   | 1       | syscall1 |param1|0|
-| 2   | 1       | syscall2 |param2|?|
-| 3   | 1       | syscall3 |param3|0x42424242|
-
-If syscalls have the same flow_id, it means they belong to the same execution trace.
-
-**Note:** A single binary can produce multiple execution traces, each sub-process execution is isolated.
+On execution, some binaries will start multiple sub-processes in order to speed up their work.
+Each of these processes is tracked individually, we called them "flows" in our database.
+Each flow contains a sequence of syscalls. If syscalls have the same flow_id, it means they belong to the same process.
 
 
 For machine learning purposes, you might want to use csv instead, just perform the following command :
