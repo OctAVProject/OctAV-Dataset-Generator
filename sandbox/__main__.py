@@ -2,7 +2,7 @@
 
 import sys
 from argparse import ArgumentParser
-from sandbox import lisa
+from sandbox import malware
 
 if __name__ == "__main__":
 
@@ -12,7 +12,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args(None if sys.argv[1:] else ['--help'])
 
-    if lisa.is_sandbox_ready():
+    if malware.is_sandbox_ready():
         if args.start:
             print("You specified --start but the sandbox seems to be up already !")
 
@@ -24,7 +24,7 @@ if __name__ == "__main__":
                 exit(1)
 
         if args.start:
-            lisa.start_sandbox()
+            malware.start_sandbox()
 
     if args.submit:
-        lisa.analyse(args.submit)
+        malware.analyse(args.submit)

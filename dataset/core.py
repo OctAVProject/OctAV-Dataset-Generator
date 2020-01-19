@@ -58,7 +58,7 @@ class Syscall(object):
         return f"{self.name}({', '.join(self.parameters)}) = {self.return_value}"
 
 
-class ExecutionFlow(List[Syscall]):
+class Flow(List[Syscall]):
 
     def __init__(self, command_line, pid, syscalls: List[Syscall] = None):
         super().__init__()
@@ -77,7 +77,7 @@ class ExecutionFlow(List[Syscall]):
 
     def __eq__(self, other):
 
-        if not isinstance(other, ExecutionFlow):
+        if not isinstance(other, Flow):
             raise NotImplemented
 
         for syscall, other_syscall in zip(self, other):
@@ -88,3 +88,21 @@ class ExecutionFlow(List[Syscall]):
 
     def __hash__(self):
         return hash(str(self))
+
+
+class Execution(List[Flow]):
+
+    def __init__(self, command_line, flows, is_malware):
+        super().__init__()
+
+        if isinstance(command_line, str):
+            self.command_line = command_line
+        elif isinstance(command_line, list):
+            self.command_line = " ".join(command_line)
+        else:
+            raise NotImplemented
+
+        self.is_malware = is_malware
+
+        for flow in flows:
+            self.append(flow)

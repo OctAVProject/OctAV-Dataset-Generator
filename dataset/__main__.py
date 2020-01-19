@@ -1,8 +1,12 @@
 # coding: utf-8
 
+import os
+import sqlite3
 import sys
+import time
 from argparse import ArgumentParser
-from dataset.builder import generate_legit_binaries_dataset, generate_malwares_dataset
+from dataset.builder import generate_legit_binaries_dataset, generate_malwares_dataset, SQLITE_SCHEME
+
 
 if __name__ == "__main__":
     parser = ArgumentParser(prog="python -m dataset", description='This is the dataset builder.')
@@ -10,13 +14,69 @@ if __name__ == "__main__":
                         help='directories of malwares to process')
     parser.add_argument('--legit-dirs', metavar="DIRECTORY", nargs='+',
                         help='directories of legit binaries to process')
+    parser.add_argument("--db", metavar="DB_FILE", required=True,
+                        help="sqlite database")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="delete the existing database to create a new one")
+    parser.add_argument("--append", action="store_true",
+                        help="append results to the existing database")
+    parser.add_argument("--stats", action="store_true",
+                        help="prints some stats about the given dataset")
 
     args = parser.parse_args(None if sys.argv[1:] else ['--help'])
+
+    if args.stats is None and args.legit_dirs is None and args.malware_dirs is None:
+        parser.error("nothing to do")
+
+    if os.path.isfile(args.db):
+        if args.overwrite:
+            os.remove(args.db)
+            print("Previous database overwritten")
+
+        elif not args.append and not args.stats:
+            parser.error(args.db + " already exists, you must specify --append or --overwrite")
+
+    else:
+        if args.append:
+            parser.error("cannot append to " + args.db + " because it does not exist (try removing --append)")
+
     legits = args.legit_dirs
     malwares = args.malware_dirs
 
+    db = sqlite3.connect(args.db)
+
+    if not args.append:
+        db.executescript(SQLITE_SCHEME)
+        db.commit()
+
     if legits:
-        generate_legit_binaries_dataset(legits)
+        begin_analysis = time.time()
+        generate_legit_binaries_dataset(legits, db)
+
+        print("\n" + "-" * 50)
+        print("Legit binaries analysis done in", int(time.time() - begin_analysis), "seconds")
 
     if malwares:
-        generate_malwares_dataset(malwares)
+        begin_analysis = time.time()
+        generate_malwares_dataset(malwares, db)
+
+        print("\n" + "-" * 50)
+        print("Malwares analysis done in", int(time.time() - begin_analysis), "seconds")
+
+    if args.stats:
+        print("-" * 50)
+
+        cursor = db.execute("SELECT COUNT(*) FROM executions;")
+        executions_count = cursor.fetchone()[0]
+        print("Executions count:", executions_count)
+
+        cursor = db.execute("SELECT COUNT(*) FROM flows;")
+        flows_count = cursor.fetchone()[0]
+        print("Flows count:", flows_count)
+
+        cursor = db.execute("SELECT COUNT(*) FROM syscalls;")
+        syscalls_count = cursor.fetchone()[0]
+        print("Syscalls count:", syscalls_count)
+        print("-" * 50)
+
+    db.close()

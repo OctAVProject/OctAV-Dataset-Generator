@@ -1,94 +1,142 @@
 # coding: utf-8
-
+import multiprocessing
 import os
 import sqlite3
 import threading
 import time
-from multiprocessing import Pool
-from typing import Set, List
 
-from dataset.syscalls import ExecutionFlow
-from sandbox.firejail import analyse as analyse_legit_binary
-from sandbox.lisa import analyse as analyse_malware
+from multiprocessing.pool import ThreadPool
+from typing import List
 
-DB_FILE = "dataset.db"
+from dataset.core import Execution
+from sandbox import legit, malware
+from sandbox.legit import get_help_manual
 
-SQLITE_SCHEME = """CREATE TABLE IF NOT EXISTS execution_flows (
-                        id integer PRIMARY KEY AUTOINCREMENT,
-                        command_line TEXT
-                        -- Maybe later we could add stuff like "opened_files"
-                    );
+SQLITE_SCHEME = """
+                CREATE TABLE IF NOT EXISTS executions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command_line TEXT NOT NULL UNIQUE, -- The same binary can appear multiple times with different parameters
+                    is_malware BOOL NOT NULL
+                );
 
-                    CREATE TABLE IF NOT EXISTS syscalls (
-                        id integer PRIMARY KEY AUTOINCREMENT,
-                        flow_id INTEGER,
-                        name TEXT,
-                        parameters TEXT,
-                        return_value TEXT,
-                        FOREIGN KEY(flow_id) REFERENCES execution_flow(id)
-                    );"""
+                CREATE TABLE IF NOT EXISTS flows (
+                    id integer PRIMARY KEY AUTOINCREMENT,
+                    execution_id INTEGER,
+                    FOREIGN KEY(execution_id) REFERENCES executions(id)
+                    -- Maybe later we could add stuff like "opened_files"
+                );
+
+                CREATE TABLE IF NOT EXISTS syscalls (
+                    id integer PRIMARY KEY AUTOINCREMENT,
+                    flow_id INTEGER,
+                    name TEXT NOT NULL,
+                    parameters TEXT,
+                    return_value TEXT,
+                    -- exec_timestamp INTEGER,
+                    FOREIGN KEY(flow_id) REFERENCES flows(id)
+                );
+                """
+
+# We use a list to buffered executions for performance
+buffered_executions = []  # type: List[Execution]
 
 # The higher this value is, the heavier it will be on RAM usage. It will increase speed however
-EXPORT_BUFFERED_SYSCALLS_COUNT = 100000
-
-db = sqlite3.connect(DB_FILE)
-
-# We store a hash of each execution flow to be sure we don't have it already (lowers RAM usage to use hashes)
-hash_of_known_syscalls_sequences = set()  # type: Set[hash(ExecutionFlow)]
-
-# We use a list to buffer execution flows for performance, we know they're unique already
-buffered_flows = []  # type: List[ExecutionFlow]
-buffered_syscalls_count = 0
+MAX_CACHED_EXECUTIONS = 100
 
 cleaning_lock = threading.Lock()
 needs_cleaning_cond = threading.Condition(lock=cleaning_lock)
 
 
-# TODO : try using postgresql instead of sqlite ? (or support both ?)
-#  execute() and commit() take 2/3 of the whole exec time...
-def _export_flows():
-    global buffered_syscalls_count
+# TODO : compare sqlite vs postgresql performance
+def _export_buffered_binaries(db: sqlite3.Connection):
 
-    for buffered_flow in buffered_flows:
-        cursor = db.execute("INSERT INTO execution_flows VALUES(NULL, ?);", (buffered_flow.command_line,))
+    to_remove_from_cache = []
 
-        for syscall in buffered_flow:
-            db.execute(f"INSERT INTO syscalls VALUES(NULL, ?, ?, ?, ?);",
-                       (cursor.lastrowid, syscall.name, syscall.raw_parameters, syscall.return_value))
+    for execution in buffered_executions:
 
-        db.commit()
+        try:
+            cursor = db.execute("INSERT INTO executions VALUES(NULL, ?, ?);",
+                                (execution.command_line, execution.is_malware))
 
-    with needs_cleaning_cond:
-        buffered_syscalls_count = 0
-        buffered_flows.clear()
-        needs_cleaning_cond.notify_all()
+            binary_id = cursor.lastrowid
+
+            for flow in execution:
+                cursor = db.execute("INSERT INTO flows VALUES(NULL, ?);", (binary_id,))
+
+                flow_id = cursor.lastrowid
+
+                for syscall in flow:
+                    db.execute(f"INSERT INTO syscalls VALUES(NULL, ?, ?, ?, ?);",
+                               (flow_id, syscall.name, syscall.raw_parameters, syscall.return_value))
+
+            db.commit()
+        except sqlite3.IntegrityError:
+            db.rollback()
+
+        to_remove_from_cache.append(execution)
+
+    for execution in to_remove_from_cache:
+        buffered_executions.remove(execution)
 
 
 # This callback is called in the context of the main process
-def _process_finished_callback(execution_flows: Set[ExecutionFlow]):
-    global buffered_syscalls_count
+def _binary_analysis_finished_callback(execution: Execution):
 
-    for flow in execution_flows:
-        flow_hash = hash(flow)
-        if flow_hash not in hash_of_known_syscalls_sequences:
-            hash_of_known_syscalls_sequences.add(flow_hash)
+    print("command '{}' started {} process(es) for a total of {} syscalls".format(
+        execution.command_line,
+        len(execution),
+        sum(len(flow) for flow in execution))
+    )
 
-            with needs_cleaning_cond:
-                buffered_syscalls_count += len(flow)
-                buffered_flows.append(flow)
-
-                if buffered_syscalls_count > EXPORT_BUFFERED_SYSCALLS_COUNT:
-                    needs_cleaning_cond.wait()
+    buffered_executions.append(execution)
 
 
-def generate_legit_binaries_dataset(legit_directories: List[str]):
-    print("Generating legit binaries dataset...")
+def _generate_command_lines_from_binary(binary_path):
 
-    # Build tables if not existing already
-    db.executescript(SQLITE_SCHEME)
-    db.commit()
+    command_lines = set()
+    command_lines.add((binary_path,))
 
-    begin_analysis = time.time()
+    help_output = get_help_manual(binary_path)
+
+    if not help_output:
+        print(binary_path, "help not found")
+        return [[binary_path]]
+
+    for line in help_output.split("\n"):
+        lowered_line = line.lower()
+
+        if "usage:" in lowered_line:
+            if "file" in lowered_line:
+                command_lines.add((binary_path, "/etc/passwd",))
+            elif "path" in lowered_line or "dir" in lowered_line or "folder" in lowered_line:
+                command_lines.add((binary_path, "/etc",))
+
+        splitted_line = line.split()
+
+        if splitted_line and splitted_line[0].startswith("-"):
+            detected_parameters = splitted_line[0].split(",")
+
+            for param in detected_parameters:
+                param = param.strip()
+
+                # We skip --param=values kinds, too hard to process
+                if "=" in param:
+                    continue
+
+                # We skip non alpha parameters to reduce false positives
+                if not param.replace("-", "").isalnum():
+                    continue
+
+                command_lines.add((binary_path, param,))
+
+    return [[*line] for line in command_lines]  # Convert tuples into lists
+
+
+def generate_legit_binaries_dataset(legit_directories: List[str], db: sqlite3.Connection):
+
+    if not legit.check_requirements():
+        print("Cannot continue legit binaries analysis")
+        exit(1)
 
     binaries = set()
     for bin_dir in legit_directories:
@@ -98,48 +146,65 @@ def generate_legit_binaries_dataset(legit_directories: List[str]):
                 binaries.add(full_path)
 
     binaries = sorted(list(binaries))  # Sort in order to see progress based on alphabetical names
+    binaries = ["/usr/bin/yes"]
+
+    # We dont want command line duplicates in the dataset
+    cursor = db.execute("SELECT command_line FROM executions;")
+    commands_already_in_dataset = set(item[0] for item in cursor.fetchall())
+
+    analysis_pool_results = []
+
+    def cleaning_work():
+
+        results_to_remove = []
+
+        for r in analysis_pool_results:
+            if r.ready():
+                results_to_remove.append(r)
+
+        for r in results_to_remove:
+            analysis_pool_results.remove(r)
+
+        if len(buffered_executions) > MAX_CACHED_EXECUTIONS:
+            _export_buffered_binaries(db)
 
     def error_callback(exc):
         raise exc
 
-    with Pool() as pool:
-
-        results = []
+    with ThreadPool(processes=os.cpu_count() * 2) as pool:
 
         for binary in binaries:
-            result = pool.apply_async(analyse_legit_binary, args=(binary,),
-                                      callback=_process_finished_callback,
-                                      error_callback=error_callback)
-            results.append(result)
 
-        while results:
-            results_indexes_to_remove = []
+            # Skip binaries we already have
+            if binary in commands_already_in_dataset:
+                pass
 
-            for i in range(len(results)):
-                if results[i].ready():
-                    results_indexes_to_remove.append(i)
+            # TODO : generate command lines depending on cpu_count() (multithreaded?) to speed things up (to keep the workers busy)
+            generated_commands = _generate_command_lines_from_binary(binary)
 
-            for i, index_to_remove in enumerate(results_indexes_to_remove):
-                del results[index_to_remove - i]
+            for cmd in generated_commands:
+                result = pool.apply_async(legit.analyse, args=(cmd,),
+                                          callback=_binary_analysis_finished_callback,
+                                          error_callback=error_callback)
+                analysis_pool_results.append(result)
 
-            if buffered_syscalls_count > EXPORT_BUFFERED_SYSCALLS_COUNT:
-                _export_flows()
+            cleaning_work()
 
-    _export_flows()  # Export remaining buffered flows
+        commands_already_in_dataset.clear()  # free some memory
 
-    print()
-    print("-" * 50)
-    print("Job done in", int(time.time() - begin_analysis), "seconds")
-    print("Executed binaries count:", len(binaries))
-    print("Unique syscall sequences count:", len(hash_of_known_syscalls_sequences))
+        while analysis_pool_results:
+            cleaning_work()
 
-    db.close()
+            if analysis_pool_results:
+                time.sleep(3)
+
+    _export_buffered_binaries(db)  # Export remaining buffered flows
 
 
-def generate_malwares_dataset(malware_directories: List[str]):
+def generate_malwares_dataset(malware_directories: List[str], db: sqlite3.Connection):
     print("Generating malwares dataset...")
 
     # TODO : Iterate through the malwares to send to the sandbox
     # with multiprocessing.Pool(processes=4) as pool:  ??
-    analyse_malware("/bin/ls")
+    malware.analyse("/bin/ls")
 
