@@ -154,7 +154,7 @@ def _exec_using_firejail(command_line, debug=False):
 
                 for child in parent.children(recursive=True):
                     if child.name() != "firejail" and child.name() != "Xvfb":
-                        child.send_signal(signal.SIGINT)
+                        child.send_signal(signal.SIGKILL)
             except psutil.NoSuchProcess:
                 pass
 
