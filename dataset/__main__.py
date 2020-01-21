@@ -5,8 +5,8 @@ import sqlite3
 import sys
 import time
 from argparse import ArgumentParser
-from dataset.builder import generate_legit_binaries_dataset, generate_malwares_dataset, SQLITE_SCHEME
-
+from dataset.builder import generate_legit_binaries_dataset, generate_malwares_dataset, SQLITE_SCHEME, \
+    import_lisa_reports
 
 if __name__ == "__main__":
     parser = ArgumentParser(prog="python -m dataset", description='This is the dataset builder.')
@@ -22,10 +22,12 @@ if __name__ == "__main__":
                         help="append results to the existing database")
     parser.add_argument("--stats", action="store_true",
                         help="prints some stats about the given dataset")
+    parser.add_argument("--lisa-reports-dir", metavar="REPORTS_DIR",
+                        help="parses json reports in the directory and insert results in the database")
 
     args = parser.parse_args(None if sys.argv[1:] else ['--help'])
 
-    if args.stats is None and args.legit_dirs is None and args.malware_dirs is None:
+    if args.stats is None and args.legit_dirs is None and args.malware_dirs is None and args.lisa_reports_dir is None:
         parser.error("nothing to do")
 
     if os.path.isfile(args.db):
@@ -33,7 +35,10 @@ if __name__ == "__main__":
             os.remove(args.db)
             print("Previous database overwritten")
 
-        elif not args.append and not args.stats:
+        elif args.append:
+            print("Appending data to existing database")
+
+        elif not args.stats:
             parser.error(args.db + " already exists, you must specify --append or --overwrite")
 
     else:
@@ -42,6 +47,7 @@ if __name__ == "__main__":
 
     legits = args.legit_dirs
     malwares = args.malware_dirs
+    lisa_reports_dir = args.lisa_reports_dir
 
     db = sqlite3.connect(args.db)
 
@@ -62,6 +68,13 @@ if __name__ == "__main__":
 
         print("\n" + "-" * 50)
         print("Malwares analysis done in", int(time.time() - begin_analysis), "seconds")
+
+    if lisa_reports_dir:
+        begin_analysis = time.time()
+        import_lisa_reports(lisa_reports_dir, db)
+
+        print("\n" + "-" * 50)
+        print("Reports import done in", int(time.time() - begin_analysis), "seconds")
 
     if args.stats:
         print("-" * 50)

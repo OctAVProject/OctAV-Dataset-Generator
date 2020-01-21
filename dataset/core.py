@@ -15,7 +15,11 @@ class Syscall(object):
 
     __slots__ = ("name", "raw_parameters", "parameters", "return_value")
 
-    def __init__(self, strace_syscall_line: str):
+    def __init__(self, strace_syscall_line: str = None):
+
+        if not strace_syscall_line:
+            return
+
         # It could either mean the program is waiting for some stdin input or its running too fast for strace
         if "<unfinished ...>" in strace_syscall_line:
             raise SyscallParsingException("unfinished syscall")
@@ -60,9 +64,8 @@ class Syscall(object):
 
 class Flow(List[Syscall]):
 
-    def __init__(self, command_line, pid: int, syscalls: List[Syscall] = None):
+    def __init__(self, pid: int, syscalls: List[Syscall] = None):
         super().__init__()
-        self.command_line = command_line
         self.pid = pid
 
         if syscalls:

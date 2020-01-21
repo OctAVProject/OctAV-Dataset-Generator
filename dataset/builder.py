@@ -1,5 +1,6 @@
 # coding: utf-8
-import multiprocessing
+
+import json
 import os
 import sqlite3
 import threading
@@ -11,6 +12,7 @@ from typing import List
 from dataset.core import Execution
 from sandbox import legit, malware
 from sandbox.legit import get_help_manual
+from sandbox.malware import parse_lisa_report
 
 SQLITE_SCHEME = """
                 CREATE TABLE IF NOT EXISTS executions (
@@ -45,6 +47,27 @@ MAX_CACHED_EXECUTIONS = 100
 
 cleaning_lock = threading.Lock()
 needs_cleaning_cond = threading.Condition(lock=cleaning_lock)
+
+analysis_pool_results = []
+
+
+def _cleaning_work(db):
+
+    results_to_remove = []
+
+    for r in analysis_pool_results:
+        if r.ready():
+            results_to_remove.append(r)
+
+    for r in results_to_remove:
+        analysis_pool_results.remove(r)
+
+    if len(buffered_executions) > MAX_CACHED_EXECUTIONS:
+        _export_buffered_binaries(db)
+
+
+def _error_callback(exc):
+    raise exc
 
 
 # TODO : compare sqlite vs postgresql performance
@@ -85,13 +108,20 @@ def _export_buffered_binaries(db: sqlite3.Connection):
 # This callback is called in the context of the main process
 def _binary_analysis_finished_callback(execution: Execution):
 
-    print("command '{}' started {} process(es) for a total of {} syscalls".format(
-        execution.command_line,
-        len(execution),
-        sum(len(flow) for flow in execution))
-    )
+    if execution:
+        print("command '{}' started {} process(es) for a total of {} syscalls".format(
+            execution.command_line,
+            len(execution),
+            sum(len(flow) for flow in execution))
+        )
 
-    buffered_executions.append(execution)
+        buffered_executions.append(execution)
+
+
+def _get_files_already_in_dataset(db: sqlite3.Connection):
+    # We dont want command line duplicates in the dataset
+    cursor = db.execute("SELECT command_line FROM executions;")
+    return set(item[0] for item in cursor.fetchall())
 
 
 def _generate_command_lines_from_binary(binary_path):
@@ -136,6 +166,7 @@ def _generate_command_lines_from_binary(binary_path):
 
 
 def generate_legit_binaries_dataset(legit_directories: List[str], db: sqlite3.Connection):
+    global analysis_pool_results
 
     if not legit.check_requirements():
         print("Cannot continue legit binaries analysis")
@@ -149,29 +180,7 @@ def generate_legit_binaries_dataset(legit_directories: List[str], db: sqlite3.Co
                 binaries.add(full_path)
 
     binaries = sorted(list(binaries))  # Sort in order to see progress based on alphabetical names
-
-    # We dont want command line duplicates in the dataset
-    cursor = db.execute("SELECT command_line FROM executions;")
-    commands_already_in_dataset = set(item[0] for item in cursor.fetchall())
-
-    analysis_pool_results = []
-
-    def cleaning_work():
-
-        results_to_remove = []
-
-        for r in analysis_pool_results:
-            if r.ready():
-                results_to_remove.append(r)
-
-        for r in results_to_remove:
-            analysis_pool_results.remove(r)
-
-        if len(buffered_executions) > MAX_CACHED_EXECUTIONS:
-            _export_buffered_binaries(db)
-
-    def error_callback(exc):
-        raise exc
+    commands_already_in_dataset = _get_files_already_in_dataset(db)
 
     with ThreadPool(processes=os.cpu_count() * 2) as pool:
 
@@ -187,15 +196,15 @@ def generate_legit_binaries_dataset(legit_directories: List[str], db: sqlite3.Co
             for cmd in generated_commands:
                 result = pool.apply_async(legit.analyse, args=(cmd,),
                                           callback=_binary_analysis_finished_callback,
-                                          error_callback=error_callback)
+                                          error_callback=_error_callback)
                 analysis_pool_results.append(result)
 
-            cleaning_work()
+            _cleaning_work(db)
 
         commands_already_in_dataset.clear()  # free some memory
 
         while analysis_pool_results:
-            cleaning_work()
+            _cleaning_work(db)
 
             if analysis_pool_results:
                 time.sleep(3)
@@ -209,3 +218,38 @@ def generate_malwares_dataset(malware_directories: List[str], db: sqlite3.Connec
     # TODO : Iterate through the malwares to send to the sandbox
     # with multiprocessing.Pool(processes=4) as pool:  ??
     malware.analyse("/bin/ls")
+
+
+def import_lisa_reports(reports_dir, db: sqlite3.Connection):
+    global analysis_pool_results
+
+    commands_already_in_dataset = _get_files_already_in_dataset(db)
+
+    with ThreadPool(processes=os.cpu_count()) as pool:
+
+        for file in os.listdir(reports_dir):
+            with open(reports_dir + "/" + file, "r") as fd:
+                content = fd.read()
+
+            report = json.loads(content)
+
+            # Skip binaries we already have
+            if report["file_name"] in commands_already_in_dataset:
+                continue
+
+            result = pool.apply_async(parse_lisa_report, args=(report,),
+                                      callback=_binary_analysis_finished_callback,
+                                      error_callback=_error_callback)
+            analysis_pool_results.append(result)
+
+            _cleaning_work(db)
+
+        commands_already_in_dataset.clear()  # free some memory
+
+        while analysis_pool_results:
+            _cleaning_work(db)
+
+            if analysis_pool_results:
+                time.sleep(3)
+
+        _export_buffered_binaries(db)  # Export remaining buffered flows
