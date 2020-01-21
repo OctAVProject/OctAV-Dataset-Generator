@@ -60,7 +60,10 @@ def _export_buffered_binaries(db: sqlite3.Connection):
 
             binary_id = cursor.lastrowid
 
-            for flow in execution:
+            execution_sorted_by_pid = sorted(buffered_executions, key=lambda f: f.pid)
+
+            # data inserted follows the spawned processes order (thanks to pid sorting)
+            for flow in execution_sorted_by_pid:
                 cursor = db.execute("INSERT INTO flows VALUES(NULL, ?);", (binary_id,))
 
                 flow_id = cursor.lastrowid
@@ -206,4 +209,3 @@ def generate_malwares_dataset(malware_directories: List[str], db: sqlite3.Connec
     # TODO : Iterate through the malwares to send to the sandbox
     # with multiprocessing.Pool(processes=4) as pool:  ??
     malware.analyse("/bin/ls")
-

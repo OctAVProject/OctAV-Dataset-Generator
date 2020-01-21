@@ -177,7 +177,7 @@ def _exec_using_firejail(command_line, debug=False):
                 _, pid = file.split(".")
 
                 try:
-                    flow = Flow(" ".join(command_line), pid, _parse_strace_output(file))
+                    flow = Flow(" ".join(command_line), int(pid), _parse_strace_output(file))
                     flows.append(flow)
                 except ProgramCrashedException:
                     print(command_line, "crashed")

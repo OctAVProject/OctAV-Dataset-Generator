@@ -60,7 +60,7 @@ class Syscall(object):
 
 class Flow(List[Syscall]):
 
-    def __init__(self, command_line, pid, syscalls: List[Syscall] = None):
+    def __init__(self, command_line, pid: int, syscalls: List[Syscall] = None):
         super().__init__()
         self.command_line = command_line
         self.pid = pid
