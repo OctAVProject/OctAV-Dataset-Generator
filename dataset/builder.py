@@ -60,7 +60,7 @@ def _export_buffered_binaries(db: sqlite3.Connection):
 
             binary_id = cursor.lastrowid
 
-            execution_sorted_by_pid = sorted(buffered_executions, key=lambda f: f.pid)
+            execution_sorted_by_pid = sorted(execution, key=lambda f: f.pid)
 
             # data inserted follows the spawned processes order (thanks to pid sorting)
             for flow in execution_sorted_by_pid:
