@@ -5,8 +5,8 @@ import sqlite3
 import sys
 import time
 from argparse import ArgumentParser
-from dataset.builder import generate_legit_binaries_dataset, generate_malwares_dataset, SQLITE_SCHEME, \
-    import_lisa_reports
+from dataset.builder import generate_legit_binaries_dataset, generate_malwares_dataset, SQLITE_SCHEME, import_lisa_reports
+
 
 if __name__ == "__main__":
     parser = ArgumentParser(prog="python -m dataset", description='This is the dataset builder.')

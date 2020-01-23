@@ -11,7 +11,6 @@ from typing import List
 
 from dataset.core import Execution
 from sandbox import legit, malware
-from sandbox.legit import get_help_manual
 from sandbox.malware import parse_lisa_report
 
 SQLITE_SCHEME = """
@@ -124,48 +123,12 @@ def _get_files_already_in_dataset(db: sqlite3.Connection):
     return set(item[0] for item in cursor.fetchall())
 
 
-def _generate_command_lines_from_binary(binary_path):
+def _generate_dataset(module, directories: List[str], db: sqlite3.Connection):
+    """
+    module: either 'malware' or 'legit'
+    directories: the directories to get the executables from
+    """
 
-    command_lines = set()
-    command_lines.add((binary_path,))
-
-    help_output = get_help_manual(binary_path)
-
-    if not help_output:
-        print(binary_path, "help not found")
-        return [[binary_path]]
-
-    for line in help_output.split("\n"):
-        lowered_line = line.lower()
-
-        if "usage:" in lowered_line:
-            if "file" in lowered_line:
-                command_lines.add((binary_path, "/etc/passwd",))
-            elif "path" in lowered_line or "dir" in lowered_line or "folder" in lowered_line:
-                command_lines.add((binary_path, "/etc",))
-
-        splitted_line = line.split()
-
-        if splitted_line and splitted_line[0].startswith("-"):
-            detected_parameters = splitted_line[0].split(",")
-
-            for param in detected_parameters:
-                param = param.strip()
-
-                # We skip --param=values kinds, too hard to process
-                if "=" in param:
-                    continue
-
-                # We skip non alpha parameters to reduce false positives
-                if not param.replace("-", "").isalnum():
-                    continue
-
-                command_lines.add((binary_path, param,))
-
-    return [[*line] for line in command_lines]  # Convert tuples into lists
-
-
-def generate_legit_binaries_dataset(legit_directories: List[str], db: sqlite3.Connection):
     global analysis_pool_results
 
     if not legit.check_requirements():
@@ -173,7 +136,7 @@ def generate_legit_binaries_dataset(legit_directories: List[str], db: sqlite3.Co
         exit(1)
 
     binaries = set()
-    for bin_dir in legit_directories:
+    for bin_dir in directories:
         for file in os.listdir(bin_dir):
             full_path = os.path.realpath(bin_dir + "/" + file)
             if os.path.isfile(full_path):
@@ -190,11 +153,10 @@ def generate_legit_binaries_dataset(legit_directories: List[str], db: sqlite3.Co
             if binary in commands_already_in_dataset:
                 continue
 
-            # TODO : generate command lines depending on cpu_count() (multithreaded?) to speed things up (to keep the workers busy)
-            generated_commands = _generate_command_lines_from_binary(binary)
+            generated_commands = module.generate_command_lines_from_binary(binary)
 
             for cmd in generated_commands:
-                result = pool.apply_async(legit.analyse, args=(cmd,),
+                result = pool.apply_async(module.analyse, args=(cmd,),
                                           callback=_binary_analysis_finished_callback,
                                           error_callback=_error_callback)
                 analysis_pool_results.append(result)
@@ -212,12 +174,14 @@ def generate_legit_binaries_dataset(legit_directories: List[str], db: sqlite3.Co
     _export_buffered_binaries(db)  # Export remaining buffered flows
 
 
+def generate_legit_binaries_dataset(legit_directories: List[str], db: sqlite3.Connection):
+    print("Generating legit binaries dataset...")
+    _generate_dataset(legit, legit_directories, db)
+
+
 def generate_malwares_dataset(malware_directories: List[str], db: sqlite3.Connection):
     print("Generating malwares dataset...")
-
-    # TODO : Iterate through the malwares to send to the sandbox
-    # with multiprocessing.Pool(processes=4) as pool:  ??
-    malware.analyse("/bin/ls")
+    _generate_dataset(malware, malware_directories, db)
 
 
 def import_lisa_reports(reports_dir, db: sqlite3.Connection):

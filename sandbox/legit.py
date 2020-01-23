@@ -206,6 +206,46 @@ def get_help_manual(binary_path):
         return None
 
 
+def generate_command_lines_from_binary(binary_path) -> List[List[str]]:
+    command_lines = set()
+    command_lines.add((binary_path,))
+
+    help_output = get_help_manual(binary_path)
+
+    if not help_output:
+        print(binary_path, "help not found")
+        return [[binary_path]]
+
+    for line in help_output.split("\n"):
+        lowered_line = line.lower()
+
+        if "usage:" in lowered_line:
+            if "file" in lowered_line:
+                command_lines.add((binary_path, "/etc/passwd",))
+            elif "path" in lowered_line or "dir" in lowered_line or "folder" in lowered_line:
+                command_lines.add((binary_path, "/etc",))
+
+        splitted_line = line.split()
+
+        if splitted_line and splitted_line[0].startswith("-"):
+            detected_parameters = splitted_line[0].split(",")
+
+            for param in detected_parameters:
+                param = param.strip()
+
+                # We skip --param=values kinds, too hard to process
+                if "=" in param:
+                    continue
+
+                # We skip non alpha parameters to reduce false positives
+                if not param.replace("-", "").isalnum():
+                    continue
+
+                command_lines.add((binary_path, param,))
+
+    return [[*line] for line in command_lines]  # Convert tuples into lists
+
+
 def analyse(command_line) -> Execution:
     flows, _, _, _ = _exec_using_firejail(command_line, debug=True)
     return Execution(command_line, flows, is_malware=False)
