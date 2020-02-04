@@ -5,7 +5,6 @@ import signal
 import subprocess
 import time
 from tempfile import TemporaryDirectory
-from threading import Thread
 from typing import List
 
 import psutil
@@ -14,7 +13,7 @@ from dataset.core import Syscall, Flow, SyscallParsingException, Execution
 
 
 FIREJAIL_COMMAND = ["firejail", "--x11=xvfb", "--allow-debuggers", "--overlay-tmpfs",
-                       "--nodbus", "--nosound", "--nodvd", "--nonewprivs"]
+                    "--nodbus", "--nosound", "--nodvd", "--nonewprivs"]
 
 
 class ProgramCrashedException(Exception):
@@ -128,7 +127,7 @@ def _exec_using_firejail(command_line, debug=False):
         command = FIREJAIL_COMMAND.copy()
 
         if debug:
-            command += ["strace", "-o", output_filename, "-ff", "-xx", "-qq", "-s", "1000"]
+            command += ["strace", "-o", output_filename, "-ff", "-xx", "-qq", "-s", "100"]
 
         command += command_line
 
@@ -177,7 +176,7 @@ def _exec_using_firejail(command_line, debug=False):
                 _, pid = file.split(".")
 
                 try:
-                    flow = Flow(" ".join(command_line), int(pid), _parse_strace_output(file))
+                    flow = Flow(int(pid), _parse_strace_output(file))
                     flows.append(flow)
                 except ProgramCrashedException:
                     print(command_line, "crashed")
